@@ -50,9 +50,11 @@ directly with the parent project's `train_gpt_pretrain.py` or `visualize.py`.
 ## Bundled short example
 
 The parent project includes a compact six-sequence demonstration at
-`example/sequences/v1/data_part_1.csv`. It was generated from six local images
+`../example/sequences/v1/data_part_1.csv`. It was generated from six local images
 with `SHAPE_RENDERER_NUM_VERSIONS=1` and
 `SHAPE_RENDERER_MAX_OUTPUT_STEPS=11`, then the source images were removed.
 Each group contains one background row and ten accepted primitives. It uses
 the same CSV schema as training data, but it is intentionally too short for
 the 144-step trainer and is only for `../example.py` inference visualization.
+That script uses all eleven rows as its prompt, then samples the remaining 133
+steps to render a 144-step completion beside the short input.

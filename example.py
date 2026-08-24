@@ -1,9 +1,9 @@
 """Render a six-row comparison from the bundled 11-step example sequences.
 
 The example CSV stores one background operation followed by ten accepted
-primitives for each image.  The released model receives the first ten steps
-and samples the eleventh; the output figure compares that prediction against
-the true eleven-step sequence.
+primitives for each image. Those eleven steps are the model prompt. The
+released 144-step model then autoregressively completes the remaining 133
+steps; the output figure compares the short input with the full completion.
 """
 
 from __future__ import annotations
@@ -28,9 +28,10 @@ from visualize import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DEFAULT_CSV_PATH = PROJECT_ROOT / "fast_shape_render" / "example" / "sequences" / "v1" / "data_part_1.csv"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "fast_shape_render" / "example" / "example_inference.png"
+DEFAULT_CSV_PATH = PROJECT_ROOT / "example" / "sequences" / "v1" / "data_part_1.csv"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "example" / "example_inference.png"
 EXAMPLE_SEQUENCE_STEPS = 11
+COMPLETION_STEPS = 144
 EXAMPLE_COUNT = 6
 
 
@@ -63,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         "--temperature",
         type=float,
         default=0.4,
-        help="Positive sampling temperature for the eleventh step (default: 0.4).",
+        help="Positive sampling temperature for the 144-step completion (default: 0.4).",
     )
     parser.add_argument(
         "--seed",
@@ -141,7 +142,7 @@ def load_example_groups(csv_path: Path) -> list[tuple[str, pd.DataFrame]]:
     return groups
 
 
-def validate_release_config(release_config: dict) -> tuple[int, int]:
+def validate_release_config(release_config: dict) -> int:
     sequence = release_config["sequence"]
     if release_config["token_layout"]["version"] != TOKEN_LAYOUT.version:
         raise ValueError("Release token layout does not match this source checkout.")
@@ -155,12 +156,12 @@ def validate_release_config(release_config: dict) -> tuple[int, int]:
             f"This example requires nine tokens per step; the model package declares "
             f"{sequence['tokens_per_step']}."
         )
-    if sequence["context_steps"] < EXAMPLE_SEQUENCE_STEPS:
+    if sequence["context_steps"] != COMPLETION_STEPS:
         raise ValueError(
-            f"The model context has only {sequence['context_steps']} steps; "
-            f"the example requires {EXAMPLE_SEQUENCE_STEPS}."
+            f"This example requires a {COMPLETION_STEPS}-step model; the model "
+            f"package declares {sequence['context_steps']} context steps."
         )
-    return sequence["prefix_steps"], sequence["tokens_per_step"]
+    return sequence["tokens_per_step"]
 
 
 def main() -> None:
@@ -172,20 +173,39 @@ def main() -> None:
     device = resolve_device(args.device)
     groups = load_example_groups(args.csv_path)
     model, release_config, model_dir = load_pretrained(args.model_dir, device=device)
-    prefix_steps, tokens_per_step = validate_release_config(release_config)
+    tokens_per_step = validate_release_config(release_config)
     canvas_size = release_config["canvas"]["canvas_size"]
 
     ground_truth = torch.stack(
         [encode_image_group(group, EXAMPLE_SEQUENCE_STEPS) for _, group in groups]
     )
-    prefix_tokens = prefix_steps * tokens_per_step
-    target_tokens = EXAMPLE_SEQUENCE_STEPS * tokens_per_step
+    input_tokens = EXAMPLE_SEQUENCE_STEPS * tokens_per_step
+    target_tokens = COMPLETION_STEPS * tokens_per_step
     predicted = generate(
         model,
-        ground_truth[:, :prefix_tokens].to(device),
+        ground_truth[:, :input_tokens].to(device),
         target_tokens,
         args.temperature,
     )
+
+    input_render_data = [
+        decode_tokens_to_render_data(tokens) for tokens in ground_truth
+    ]
+    completion_render_data = [
+        decode_tokens_to_render_data(tokens) for tokens in predicted
+    ]
+    for (image_name, _), render_data in zip(groups, input_render_data, strict=True):
+        if len(render_data) != EXAMPLE_SEQUENCE_STEPS:
+            raise RuntimeError(
+                f"Input sequence {image_name!r} decoded to {len(render_data)} steps; "
+                f"expected {EXAMPLE_SEQUENCE_STEPS}."
+            )
+    for (image_name, _), render_data in zip(groups, completion_render_data, strict=True):
+        if len(render_data) != COMPLETION_STEPS:
+            raise RuntimeError(
+                f"Model completion for {image_name!r} decoded to {len(render_data)} steps; "
+                f"expected {COMPLETION_STEPS}. Try a different seed or temperature."
+            )
 
     figure, axes = plt.subplots(
         EXAMPLE_COUNT,
@@ -194,20 +214,14 @@ def main() -> None:
         squeeze=False,
     )
     for row_index, (image_name, _) in enumerate(groups):
+        render_single_image(input_render_data[row_index], axes[row_index, 0], canvas_size)
         render_single_image(
-            decode_tokens_to_render_data(ground_truth[row_index]),
-            axes[row_index, 0],
-            canvas_size,
-        )
-        render_single_image(
-            decode_tokens_to_render_data(predicted[row_index]),
-            axes[row_index, 1],
-            canvas_size,
+            completion_render_data[row_index], axes[row_index, 1], canvas_size
         )
         axes[row_index, 0].set_ylabel(f"Sequence {image_name}", rotation=90, labelpad=12)
         if row_index == 0:
-            axes[row_index, 0].set_title("Ground truth: 11 steps")
-            axes[row_index, 1].set_title("Model: true first 10 + predicted 11th")
+            axes[row_index, 0].set_title("Input: 11 true steps")
+            axes[row_index, 1].set_title("Model completion: 144 steps")
 
     figure.suptitle("Primitive Operation Painter example inference", y=0.995)
     figure.tight_layout()

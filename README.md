@@ -76,15 +76,16 @@ training and visualization to a custom output root with
 ## Six-sequence inference example
 
 The repository includes six compact example sequences under
-`fast_shape_render/example/sequences/v1/data_part_1.csv`. Each one has eleven
+`example/sequences/v1/data_part_1.csv`. Each one has eleven
 steps: a background operation followed by ten primitives. They are a quick
 inference demonstration, not training data: the released trainer requires
 complete 144-step sequences.
 
 Point `example.py` at a local model package that contains `config.json` and
 `model.safetensors`. It renders a two-column, six-row PNG. The left side shows
-the true eleven operations; the right side keeps the true first ten operations
-and samples the eleventh with the model.
+the eleven input operations; the right side starts from those same eleven
+operations and samples the remaining 133 steps to make a complete 144-step
+sequence.
 
 ```powershell
 python example.py `
@@ -92,7 +93,7 @@ python example.py `
 ```
 
 By default the result is written to
-`fast_shape_render/example/example_inference.png`. Use `--csv-path`,
+`example/example_inference.png`. Use `--csv-path`,
 `--output-path`, `--temperature`, `--seed`, or `--device` to override the
 example inputs and inference settings.
 
