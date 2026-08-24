@@ -27,7 +27,7 @@ edited at the operation level.
 
 ### Human and model co-creation
 
-![A model completion before and after a person edits a primitive-operation prefix](assets/human_model_collaboration.png)
+![A model completion before and after a person edits a primitive-operation prefix](assets/human_model_collaboration.png?v=013b2d0)
 
 The top path shows the model completing an initial set of primitives on its
 own. The bottom path shows the intended collaboration loop: a person changes a
