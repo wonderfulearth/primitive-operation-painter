@@ -1,31 +1,84 @@
 # Primitive Operation Painter
 
-Primitive Operation Painter is a custom PyTorch autoregressive model for
-predicting sequences of primitive drawing operations. Each drawing step is
-encoded as nine discrete tokens: x, y, angle, width, height, shape type, and
-RGB colour.
+Primitive Operation Painter explores image generation as an explicit,
+human-readable drawing process. Instead of emitting pixels or latent variables
+directly, the model builds an image one primitive operation at a time.
 
 ![Six examples of autoregressive completion](example/autoregressive_prediction.gif)
 
 Six bundled 11-step inputs are shown in a 3-column × 2-row grid for three
-seconds, then the model adds each predicted primitive until every sample reaches
-144 steps. The animation is generated with full 256-colour encoding and a
-short fade-in for each new primitive.
+seconds, then the model adds one primitive at a time until every sample reaches
+144 steps. The animation is a rendering of the model's operation history, not
+a pixel-space interpolation.
 
-This repository contains only the files required to use and continue training
-the released **144-step** model: the model definition, token layout,
-full-sequence data encoder, training entry point, and visualization script. It
-deliberately does **not** contain training data, model weights, resumable
-checkpoints, historical migration scripts, or generated results.  The only
-small bundled data artifact is the six-sequence inference example described
-below.
+## Why primitive operations?
+
+Most image generators expose a prompt and a final image, while the intermediate
+process is difficult to inspect, explain, or take over. This project asks a
+different question: can an image model draw through a representation that a
+person can read and modify while it is working?
+
+Here, a canvas is a sequence of background, ellipse, and rotated-rectangle
+operations. Each operation has an explicit centre, angle, width, height, shape
+type, and RGB colour. The model predicts these values autoregressively rather
+than directly changing pixels. A completed image is therefore also a drawing
+history: a concrete list of operations that can be rendered, inspected, or
+edited at the operation level.
+
+### Human and model co-creation
+
+![A model completion before and after a person edits a primitive-operation prefix](assets/human_model_collaboration.png)
+
+The top path shows the model completing an initial set of primitives on its
+own. The bottom path shows the intended collaboration loop: a person changes a
+visible operation in the prefix, then the model continues from that modified
+history. This makes the intervention part of the model's actual input rather
+than a post-hoc pixel edit.
+
+The representation is directly editable; this repository currently provides
+the sequence format, inference, rendering, and training code needed to study
+that workflow. It does **not** yet provide a polished graphical editor or a
+general guarantee that a particular manual edit will produce a particular
+semantic outcome.
+
+## How the pipeline works
+
+1. **Decompose images.** The Rust/WGPU `fast_shape_render` converter
+   approximates training images with primitive drawing operations and writes
+   the CSV format consumed by the Python data loader.
+2. **Encode operations.** Every drawing step is represented by nine discrete
+   tokens: x, y, angle, width, height, shape type, and RGB colour.
+3. **Predict the next operation.** The GPT model reads the preceding operation
+   history and autoregressively predicts the next primitive field by field.
+4. **Render, inspect, and continue.** Decoded tokens reproduce a canvas. A
+   person can provide or alter an operation prefix, and the model can complete
+   the remaining sequence from that state.
+
+## Current scope and limitations
+
+This repository contains the files required to use and continue training the
+released **144-step** model: the model definition, token layout, full-sequence
+data encoder, training entry point, renderer, GPU image-to-sequence converter,
+and a six-sequence inference example.
+
+- It is an operation-sequence model, not a prompt-to-image system or a
+  pixel-level image editor.
+- Its output uses a finite sequence of simple primitives. This supports
+  coarse structure, colour blocks, and an inspectable drawing history, but it
+  does not replace a high-fidelity texture or detail renderer.
+- The bundled example starts with eleven true operations and asks the model to
+  complete the remaining 133 operations. It demonstrates the protocol; it is
+  not a training dataset.
+- Training data, model weights, resumable checkpoints, historical migration
+  scripts, and generated local results are intentionally excluded from the
+  code repository.
 
 ## License and data boundary
 
-The code and the released EMA inference weights are intended to be licensed
-under [MIT](LICENSE). Training data is not included or redistributed. Anyone
-using this project is responsible for confirming they have the necessary
-rights for their own input and training data.
+The code and released EMA inference weights are intended to be licensed under
+[MIT](LICENSE). Training data is not included or redistributed. Anyone using
+this project is responsible for confirming they have the necessary rights for
+their own input and training data.
 
 ## Setup
 
@@ -136,8 +189,8 @@ python example.py `
   --gif-output example\autoregressive_prediction.gif
 ```
 
-Use `--gif-fps` to change the fade and settled-frame rate; the input hold is
-always three seconds.
+Use `--gif-fps` to change the prediction-frame rate; the input hold is always
+three seconds.
 
 Both `example.py` and `visualize.py` use the same field-aware sampling
 schedule. For each generated token, temperature and `top_k` are evaluated as
@@ -156,10 +209,6 @@ python visualize.py `
   --data-dir D:\datasets\output_256 `
   --num-tests 8
 ```
-
-The planned public code repository name is `primitive-operation-painter`; the
-planned model repository name is `primitive-operation-painter-weight`. This
-local preparation does not create or upload either remote repository.
 
 ## Continue training the released weight
 
