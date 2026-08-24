@@ -1,0 +1,35 @@
+# Large model artifacts and resumable training state
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+checkpoints*/
+
+# Training data, generated caches, and local outputs
+High_reso_dataset/
+data/
+dataset_cache*/
+visualizations/
+runs/
+logs/
+*.png
+
+# Python and tooling state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local credentials and environments
+.env
+.env.*
+.venv/
+venv/
+env/
+
+# Local publication and private archive staging
+hf_release/
+private_model_archives/
