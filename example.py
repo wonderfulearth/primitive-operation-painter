@@ -39,8 +39,9 @@ EXAMPLE_SEQUENCE_STEPS = 11
 COMPLETION_STEPS = 144
 EXAMPLE_COUNT = 6
 GIF_INITIAL_FRAME_DURATION_MS = 3_000
-GIF_MAX_BYTES = 10 * 1024 * 1024
-GIF_ENCODING_LEVELS = ((720, 128), (640, 96), (560, 64))
+GIF_MAX_BYTES = 30 * 1024 * 1024
+GIF_ENCODING_LEVELS = ((960, 256), (864, 256), (800, 256))
+GIF_FADE_ALPHA = 0.35
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,14 +78,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional autoregressive GIF path. When supplied, keep the input frame "
-            "for three seconds and add one frame for every predicted shape."
+            "for three seconds, then fade in every predicted shape."
         ),
     )
     parser.add_argument(
         "--gif-fps",
         type=int,
-        default=10,
-        help="Frames per second after the three-second input hold (default: 10).",
+        default=12,
+        help=(
+            "Animation frames per second after the three-second input hold; each "
+            "predicted shape enters with a short fade (default: 12)."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -211,13 +215,19 @@ def render_animation_frame(
     render_data_by_sample: list[np.ndarray],
     step_count: int,
     canvas_size: int,
+    final_primitive_alpha: float = 1.0,
 ) -> Image.Image:
     """Render one 3x2 grid frame for a shared autoregressive step count."""
     figure, axes = plt.subplots(2, 3, figsize=(7.2, 5.1), dpi=100, squeeze=False)
     for axis, (image_name, _), render_data in zip(
         axes.flat, groups, render_data_by_sample, strict=True
     ):
-        render_single_image(render_data, axis, canvas_size)
+        render_single_image(
+            render_data,
+            axis,
+            canvas_size,
+            final_primitive_alpha=final_primitive_alpha,
+        )
         axis.set_title(f"Example {image_name}", fontsize=9)
 
     if step_count == EXAMPLE_SEQUENCE_STEPS:
@@ -238,7 +248,7 @@ def render_autoregressive_frames(
     tokens_per_step: int,
     canvas_size: int,
 ) -> list[Image.Image]:
-    """Decode and render the input state plus one frame for each completed shape."""
+    """Render the input, each new faded primitive, and a final settled completion."""
     expected_frame_count = 1 + COMPLETION_STEPS - EXAMPLE_SEQUENCE_STEPS
     if len(token_states) != expected_frame_count:
         raise RuntimeError(
@@ -246,6 +256,7 @@ def render_autoregressive_frames(
         )
 
     frames: list[Image.Image] = []
+    final_render_data: list[np.ndarray] | None = None
     for state in token_states:
         if state.ndim != 2 or state.size(0) != EXAMPLE_COUNT:
             raise RuntimeError(f"Invalid animation state shape: {tuple(state.shape)}")
@@ -259,17 +270,54 @@ def render_autoregressive_frames(
             raise RuntimeError(
                 f"Animation state for step {step_count} could not be decoded completely."
             )
-        frames.append(render_animation_frame(groups, render_data, step_count, canvas_size))
+        if step_count == EXAMPLE_SEQUENCE_STEPS:
+            frames.append(render_animation_frame(groups, render_data, step_count, canvas_size))
+        else:
+            frames.append(
+                render_animation_frame(
+                    groups,
+                    render_data,
+                    step_count,
+                    canvas_size,
+                    final_primitive_alpha=GIF_FADE_ALPHA,
+                )
+            )
+            if step_count == COMPLETION_STEPS:
+                final_render_data = render_data
+    if final_render_data is None:
+        raise RuntimeError("Animation did not produce a complete final render state.")
+    frames.append(
+        render_animation_frame(
+            groups,
+            final_render_data,
+            COMPLETION_STEPS,
+            canvas_size,
+        )
+    )
     return frames
+
+
+def build_global_palette(frames: list[Image.Image]) -> Image.Image:
+    """Build one shared 256-colour palette so unchanged pixels never shimmer."""
+    tile_width, tile_height, columns = 96, 68, 16
+    rows = (len(frames) + columns - 1) // columns
+    palette_source = Image.new("RGB", (columns * tile_width, rows * tile_height))
+    for index, frame in enumerate(frames):
+        tile = frame.resize((tile_width, tile_height), Image.Resampling.BOX)
+        x = (index % columns) * tile_width
+        y = (index // columns) * tile_height
+        palette_source.paste(tile, (x, y))
+    return palette_source.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
 
 
 def write_optimized_gif(
     frames: list[Image.Image], output_path: Path, fps: int
 ) -> tuple[int, int, int]:
-    """Write a README-friendly GIF and return (width, palette_size, byte_size)."""
+    """Write a high-quality README GIF and return (width, palette_size, byte_size)."""
     if fps <= 0:
         raise ValueError("--gif-fps must be positive.")
-    if len(frames) != 1 + COMPLETION_STEPS - EXAMPLE_SEQUENCE_STEPS:
+    expected_frames = 2 + COMPLETION_STEPS - EXAMPLE_SEQUENCE_STEPS
+    if len(frames) != expected_frames:
         raise ValueError("GIF export received an unexpected frame count.")
 
     output_path = output_path.expanduser()
@@ -281,11 +329,15 @@ def write_optimized_gif(
             max(1, round(frames[0].width * scale)),
             max(1, round(frames[0].height * scale)),
         )
+        palette = build_global_palette(frames)
         encoded_frames = []
         for frame in frames:
             resized = frame.resize(output_size, Image.Resampling.LANCZOS)
             encoded_frames.append(
-                resized.quantize(colors=palette_size, method=Image.Quantize.MEDIANCUT)
+                resized.quantize(
+                    palette=palette,
+                    dither=Image.Dither.NONE,
+                )
             )
         encoded_frames[0].save(
             output_path,
@@ -294,8 +346,8 @@ def write_optimized_gif(
             append_images=encoded_frames[1:],
             duration=durations,
             loop=0,
-            disposal=2,
-            optimize=True,
+            disposal=1,
+            optimize=False,
         )
         byte_size = output_path.stat().st_size
         if byte_size <= GIF_MAX_BYTES:
@@ -303,8 +355,8 @@ def write_optimized_gif(
 
     output_path.unlink(missing_ok=True)
     raise RuntimeError(
-        f"GIF could not be compressed below {GIF_MAX_BYTES / 1024 / 1024:.0f} MiB. "
-        "Reduce the animation dimensions or palette settings."
+        f"GIF could not be encoded below {GIF_MAX_BYTES / 1024 / 1024:.0f} MiB "
+        "without dropping below the README-quality resolution."
     )
 
 

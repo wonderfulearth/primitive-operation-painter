@@ -5,6 +5,13 @@ predicting sequences of primitive drawing operations. Each drawing step is
 encoded as nine discrete tokens: x, y, angle, width, height, shape type, and
 RGB colour.
 
+![Six examples of autoregressive completion](example/autoregressive_prediction.gif)
+
+Six bundled 11-step inputs are shown in a 3-column × 2-row grid for three
+seconds, then the model adds each predicted primitive until every sample reaches
+144 steps. The animation is generated with full 256-colour encoding and a
+short fade-in for each new primitive.
+
 This repository contains only the files required to use and continue training
 the released **144-step** model: the model definition, token layout,
 full-sequence data encoder, training entry point, and visualization script. It
@@ -119,22 +126,18 @@ By default the result is written to
 `example/example_inference.png`. Use `--csv-path`, `--output-path`, `--seed`,
 or `--device` to override the example inputs and inference settings.
 
-## Autoregressive prediction animation
+## Recreate the autoregressive animation
 
-![Six examples of autoregressive completion](example/autoregressive_prediction.gif)
-
-The animation shows all six example sequences in a 3-column by 2-row grid.
-It holds the true 11-step input for three seconds, then adds one frame for each
-newly predicted primitive through step 144. Recreate the tracked README asset
-with the same local model package and seed:
+Recreate the tracked README animation with the same local model package and
+seed:
 
 ```powershell
 python example.py `
   --gif-output example\autoregressive_prediction.gif
 ```
 
-Use `--gif-fps` to change the prediction-frame rate; the input hold is always
-three seconds.
+Use `--gif-fps` to change the fade and settled-frame rate; the input hold is
+always three seconds.
 
 Both `example.py` and `visualize.py` use the same field-aware sampling
 schedule. For each generated token, temperature and `top_k` are evaluated as

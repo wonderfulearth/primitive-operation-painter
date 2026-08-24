@@ -217,12 +217,25 @@ def decode_tokens_to_render_data(tokens: torch.Tensor) -> np.ndarray:
     return np.asarray(rows, dtype=np.float32)
 
 
-def render_single_image(render_data: np.ndarray, axis, canvas_size: int) -> None:
+def render_single_image(
+    render_data: np.ndarray,
+    axis,
+    canvas_size: int,
+    final_primitive_alpha: float = 1.0,
+) -> None:
+    """Render one operation sequence without patch outlines.
+
+    ``final_primitive_alpha`` is used by the README animation to fade in the
+    newest complete primitive.  Normal visualizations retain the established
+    50% primitive opacity by using its default of one.
+    """
     axis.set_xlim(0, canvas_size)
     axis.set_ylim(canvas_size, 0)
     axis.set_xticks([])
     axis.set_yticks([])
     axis.set_aspect("equal")
+    for spine in axis.spines.values():
+        spine.set_visible(False)
     if len(render_data) == 0:
         return
 
@@ -230,17 +243,34 @@ def render_single_image(render_data: np.ndarray, axis, canvas_size: int) -> None
     axis.set_facecolor(tuple(np.clip(background[6:9] / 255.0, 0.0, 1.0)))
     from matplotlib.patches import Ellipse, Rectangle
 
-    for cx, cy, width, height, shape_type, theta, red, green, blue in render_data[1:]:
-        colour = (*np.clip([red, green, blue], 0.0, 255.0) / 255.0, 0.5)
+    final_primitive_alpha = float(np.clip(final_primitive_alpha, 0.0, 1.0))
+    primitive_rows = render_data[1:]
+    for primitive_index, (
+        cx,
+        cy,
+        width,
+        height,
+        shape_type,
+        theta,
+        red,
+        green,
+        blue,
+    ) in enumerate(primitive_rows):
+        alpha = 0.5
+        if primitive_index == len(primitive_rows) - 1:
+            alpha *= final_primitive_alpha
+        colour = (*np.clip([red, green, blue], 0.0, 255.0) / 255.0, alpha)
         if int(shape_type) == 1:
             primitive = Ellipse(
                 (cx, cy), max(0.1, width), max(0.1, height),
-                angle=np.degrees(theta), color=colour,
+                angle=np.degrees(theta), facecolor=colour,
+                edgecolor="none", linewidth=0,
             )
         else:
             primitive = Rectangle(
                 (cx - width / 2, cy - height / 2), max(0.1, width), max(0.1, height),
-                angle=np.degrees(theta), rotation_point="center", color=colour,
+                angle=np.degrees(theta), rotation_point="center", facecolor=colour,
+                edgecolor="none", linewidth=0,
             )
         axis.add_patch(primitive)
 
