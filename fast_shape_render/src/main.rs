@@ -439,6 +439,32 @@ fn positive_usize_env(name: &str) -> Option<usize> {
         .filter(|&value| value > 0)
 }
 
+/// Optionally limit each emitted image sequence to a fixed number of rows.
+/// The count includes the first background row.  No setting preserves the
+/// historical behavior of writing every accepted primitive.
+fn output_step_limit() -> Result<Option<usize>, String> {
+    let Some(raw_value) = std::env::var_os("SHAPE_RENDERER_MAX_OUTPUT_STEPS") else {
+        return Ok(None);
+    };
+    if raw_value.is_empty() {
+        return Err(
+            "❌ SHAPE_RENDERER_MAX_OUTPUT_STEPS 不能为空；移除该变量即可输出完整序列。".to_string(),
+        );
+    }
+
+    let value = raw_value.to_string_lossy().parse::<usize>().map_err(|_| {
+        "❌ SHAPE_RENDERER_MAX_OUTPUT_STEPS 必须是正整数（包含背景步骤）。".to_string()
+    })?;
+    if value == 0 || value > MAX_ITERATIONS + 1 {
+        return Err(format!(
+            "❌ SHAPE_RENDERER_MAX_OUTPUT_STEPS={} 无效；合法范围为 1..={}（包含背景步骤）。",
+            value,
+            MAX_ITERATIONS + 1
+        ));
+    }
+    Ok(Some(value))
+}
+
 fn input_dir() -> Result<PathBuf, String> {
     std::env::var_os("SHAPE_RENDERER_INPUT_DIR")
         .filter(|value| !value.is_empty())
@@ -507,6 +533,55 @@ fn preprocess_image(path: &Path) -> HostImgData {
     }
 }
 
+/// Convert one image's accepted GPU history into the CSV row group consumed
+/// by the Python data pipeline.  A fixed limit includes the background row;
+/// when requested it must be met exactly so callers never receive a silently
+/// shortened sequence.
+fn format_image_sequence(
+    image_name: &str,
+    background: (u8, u8, u8),
+    history: &[GpuShape],
+    max_output_steps: Option<usize>,
+) -> Result<String, String> {
+    let requested_shape_count = max_output_steps.map(|step_count| step_count - 1);
+    let accepted_shapes: Vec<&GpuShape> = history
+        .iter()
+        .filter(|shape| shape.delta_err < 0.0)
+        .collect();
+
+    if let Some(required) = requested_shape_count {
+        if accepted_shapes.len() < required {
+            return Err(format!(
+                "图片 {image_name} 仅产生 {} 个有效图形，无法满足要求的 {} 个序列步骤（背景 + {} 个图形）。",
+                accepted_shapes.len(),
+                required + 1,
+                required
+            ));
+        }
+    }
+
+    let shape_count = requested_shape_count.unwrap_or(accepted_shapes.len());
+    let mut text = format!(
+        "{image_name},0.0,0.0,0.0,0.0,-1,0.0,{},{},{}\n",
+        background.0, background.1, background.2
+    );
+    for shape in accepted_shapes.into_iter().take(shape_count) {
+        text.push_str(&format!(
+            "{image_name},{},{},{},{},{},{},{},{},{}\n",
+            shape.cx,
+            shape.cy,
+            shape.hw * 2.0,
+            shape.hh * 2.0,
+            shape.shape_type,
+            shape.theta,
+            shape.r,
+            shape.g,
+            shape.b
+        ));
+    }
+    Ok(text)
+}
+
 fn create_gpu_shards(engines: &[GpuEngine], host_data: &[HostImgData]) -> Vec<GpuBatchShard> {
     balanced_ranges(host_data.len(), engines.len())
         .into_iter()
@@ -555,6 +630,7 @@ async fn process_version_on_gpu(
     host_data: &[HostImgData],
     version: usize,
     steps_to_run: usize,
+    max_output_steps: Option<usize>,
 ) -> Result<Vec<String>, String> {
     if steps_to_run == 0 || steps_to_run > MAX_ITERATIONS {
         return Err(format!(
@@ -742,39 +818,21 @@ async fn process_version_on_gpu(
         history_byte_size as usize / std::mem::size_of::<GpuShape>()
     );
 
-    let image_strings = paths
+    let image_strings: Result<Vec<String>, String> = paths
         .par_iter()
         .enumerate()
         .map(|(local_index, path)| {
-            let file_name = path.file_stem().unwrap().to_string_lossy();
+            let file_name = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("❌ 图片文件名无效：{}", path.display()))?;
             let bg = image_data[local_index].bg_color;
-            let mut text = format!(
-                "{},0.0,0.0,0.0,0.0,-1,0.0,{},{},{}\n",
-                file_name, bg.0, bg.1, bg.2
-            );
-
             let history_slice =
                 &all_history[local_index * MAX_ITERATIONS..(local_index + 1) * MAX_ITERATIONS];
-            for shape in history_slice {
-                if shape.delta_err < 0.0 {
-                    text.push_str(&format!(
-                        "{},{},{},{},{},{},{},{},{},{}\n",
-                        file_name,
-                        shape.cx,
-                        shape.cy,
-                        shape.hw * 2.0,
-                        shape.hh * 2.0,
-                        shape.shape_type,
-                        shape.theta,
-                        shape.r,
-                        shape.g,
-                        shape.b
-                    ));
-                }
-            }
-            text
+            format_image_sequence(file_name, bg, history_slice, max_output_steps)
         })
         .collect();
+    let image_strings = image_strings?;
 
     println!(
         "  ✅ GPU {} ({}) 已完成 v{}",
@@ -832,6 +890,7 @@ async fn run() -> Result<(), String> {
     let input_dir = input_dir()?;
     let output_dir = output_dir();
     let num_versions = positive_usize_env("SHAPE_RENDERER_NUM_VERSIONS").unwrap_or(NUM_VERSIONS);
+    let max_output_steps = output_step_limit()?;
 
     fs::create_dir_all(&output_dir)
         .map_err(|err| format!("❌ 无法创建输出目录 {}: {err}", output_dir.display()))?;
@@ -851,11 +910,14 @@ async fn run() -> Result<(), String> {
 
     let engines = GpuEngine::discover_all(&shader_source).await?;
     println!(
-        "🧬 计划生成版本数: {} | 画布: {}x{} | 最大步数: {} | 单个 CSV 上限: {} MB",
+        "🧬 计划生成版本数: {} | 画布: {}x{} | GPU 最大步数: {} | 输出步骤上限: {} | 单个 CSV 上限: {} MB",
         num_versions,
         W,
         H,
         MAX_ITERATIONS,
+        max_output_steps
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "不限制".to_string()),
         MAX_CSV_SIZE_BYTES / 1024 / 1024
     );
     println!("📂 输出目录: {}", output_dir.display());
@@ -906,6 +968,7 @@ async fn run() -> Result<(), String> {
                         &host_data,
                         version,
                         MAX_ITERATIONS,
+                        max_output_steps,
                     ))
                 })
                 .collect();
@@ -971,6 +1034,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::Zeroable;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1004,6 +1068,49 @@ mod tests {
             ".face_cutter_progress_gpu0.txt"
         )));
         assert!(!is_supported_image(Path::new("no_extension")));
+    }
+
+    #[test]
+    fn fixed_output_sequence_keeps_background_and_first_accepted_shapes() {
+        let history = [
+            GpuShape {
+                delta_err: 0.0,
+                ..GpuShape::zeroed()
+            },
+            GpuShape {
+                cx: 1.0,
+                delta_err: -1.0,
+                ..GpuShape::zeroed()
+            },
+            GpuShape {
+                cx: 2.0,
+                delta_err: -2.0,
+                ..GpuShape::zeroed()
+            },
+            GpuShape {
+                cx: 3.0,
+                delta_err: -3.0,
+                ..GpuShape::zeroed()
+            },
+        ];
+
+        let text = format_image_sequence("demo", (4, 5, 6), &history, Some(3)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "demo,0.0,0.0,0.0,0.0,-1,0.0,4,5,6");
+        assert!(lines[1].starts_with("demo,1,"));
+        assert!(lines[2].starts_with("demo,2,"));
+    }
+
+    #[test]
+    fn fixed_output_sequence_rejects_insufficient_accepted_shapes() {
+        let history = [GpuShape {
+            delta_err: -1.0,
+            ..GpuShape::zeroed()
+        }];
+        let error = format_image_sequence("demo", (0, 0, 0), &history, Some(3)).unwrap_err();
+        assert!(error.contains("demo"));
+        assert!(error.contains("仅产生 1 个有效图形"));
     }
 
     #[test]
@@ -1326,7 +1433,7 @@ mod tests {
             .zip(shards.par_iter())
             .map(|(engine, shard)| {
                 pollster::block_on(process_version_on_gpu(
-                    engine, shard, &paths, &host_data, 0, 1,
+                    engine, shard, &paths, &host_data, 0, 1, None,
                 ))
                 .expect("optimized GPU step and readback should succeed")
             })

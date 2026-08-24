@@ -35,10 +35,24 @@ image_name,cx,cy,w,h,shape_type,theta,r,g,b
 
 - `SHAPE_RENDERER_OUTPUT_DIR`: override the output directory.
 - `SHAPE_RENDERER_NUM_VERSIONS`: number of generated variants; default `10`.
+- `SHAPE_RENDERER_MAX_OUTPUT_STEPS`: optionally retain a fixed number of CSV
+  rows per image, including the background row. The GPU still performs all
+  275 search steps. If an image has too few accepted primitives to reach this
+  count, conversion stops with an error rather than writing a partial group.
 - `SHAPE_RENDERER_IMAGES_PER_GPU_BATCH`: per-GPU input batch size; default
   `1000`.
 - `SHAPE_RENDERER_HISTORY_READBACK_IMAGES`: images per GPU-to-CPU history
   readback chunk; default `128`.
 
-The generated CSV directory is intentionally ignored by Git. Use it directly
-with the parent project's `train_gpt_pretrain.py` or `visualize.py`.
+The normal generated CSV directory is intentionally ignored by Git. Use it
+directly with the parent project's `train_gpt_pretrain.py` or `visualize.py`.
+
+## Bundled short example
+
+The parent project includes a compact six-sequence demonstration at
+`example/sequences/v1/data_part_1.csv`. It was generated from six local images
+with `SHAPE_RENDERER_NUM_VERSIONS=1` and
+`SHAPE_RENDERER_MAX_OUTPUT_STEPS=11`, then the source images were removed.
+Each group contains one background row and ten accepted primitives. It uses
+the same CSV schema as training data, but it is intentionally too short for
+the 144-step trainer and is only for `../example.py` inference visualization.

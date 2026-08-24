@@ -9,7 +9,9 @@ This repository contains only the files required to use and continue training
 the released **144-step** model: the model definition, token layout,
 full-sequence data encoder, training entry point, and visualization script. It
 deliberately does **not** contain training data, model weights, resumable
-checkpoints, historical migration scripts, or generated results.
+checkpoints, historical migration scripts, or generated results.  The only
+small bundled data artifact is the six-sequence inference example described
+below.
 
 ## License and data boundary
 
@@ -60,6 +62,9 @@ Optional environment variables:
 
 - `SHAPE_RENDERER_OUTPUT_DIR` — use a different CSV output root.
 - `SHAPE_RENDERER_NUM_VERSIONS` — number of output variants; defaults to 10.
+- `SHAPE_RENDERER_MAX_OUTPUT_STEPS` — optionally retain a fixed number of
+  CSV rows per image, including its background row. When set, conversion fails
+  if an image has too few accepted primitives to fill the requested sequence.
 - `SHAPE_RENDERER_IMAGES_PER_GPU_BATCH` and
   `SHAPE_RENDERER_HISTORY_READBACK_IMAGES` — reduce these if GPU memory is
   limited.
@@ -67,6 +72,29 @@ Optional environment variables:
 After conversion, either use the default `data/output_256` location or point
 training and visualization to a custom output root with
 `ANIME_PAINTER_DATA_DIR` or `--data-dir`.
+
+## Six-sequence inference example
+
+The repository includes six compact example sequences under
+`fast_shape_render/example/sequences/v1/data_part_1.csv`. Each one has eleven
+steps: a background operation followed by ten primitives. They are a quick
+inference demonstration, not training data: the released trainer requires
+complete 144-step sequences.
+
+Point `example.py` at a local model package that contains `config.json` and
+`model.safetensors`. It renders a two-column, six-row PNG. The left side shows
+the true eleven operations; the right side keeps the true first ten operations
+and samples the eleventh with the model.
+
+```powershell
+python example.py `
+  --model-dir path\to\primitive-operation-painter-weight
+```
+
+By default the result is written to
+`fast_shape_render/example/example_inference.png`. Use `--csv-path`,
+`--output-path`, `--temperature`, `--seed`, or `--device` to override the
+example inputs and inference settings.
 
 ## Local visualization
 
