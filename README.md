@@ -93,9 +93,14 @@ python example.py `
 ```
 
 By default the result is written to
-`example/example_inference.png`. Use `--csv-path`,
-`--output-path`, `--temperature`, `--seed`, or `--device` to override the
-example inputs and inference settings.
+`example/example_inference.png`. Use `--csv-path`, `--output-path`, `--seed`,
+or `--device` to override the example inputs and inference settings.
+
+Both `example.py` and `visualize.py` use the same field-aware sampling
+schedule. For each generated token, temperature and `top_k` are evaluated as
+`a * step + b` from `GPT_SAMPLING_CONFIG`; `step` is the one-based drawing
+operation index, including the background operation. `top_k` is rounded down
+to an integer and clipped to the current field's valid token range.
 
 ## Local visualization
 

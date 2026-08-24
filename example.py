@@ -20,6 +20,7 @@ from pretrained import load_pretrained
 from token_layout import TOKEN_LAYOUT
 from visualize import (
     CSV_DTYPE,
+    GPT_SAMPLING_CONFIG,
     decode_tokens_to_render_data,
     encode_image_group,
     generate,
@@ -59,12 +60,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_PATH,
         help=f"Comparison image path (default: {DEFAULT_OUTPUT_PATH}).",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.4,
-        help="Positive sampling temperature for the 144-step completion (default: 0.4).",
     )
     parser.add_argument(
         "--seed",
@@ -161,13 +156,13 @@ def validate_release_config(release_config: dict) -> int:
             f"This example requires a {COMPLETION_STEPS}-step model; the model "
             f"package declares {sequence['context_steps']} context steps."
         )
+    if len(GPT_SAMPLING_CONFIG) != 9:
+        raise RuntimeError("The shared GPT sampling configuration must cover all nine fields.")
     return sequence["tokens_per_step"]
 
 
 def main() -> None:
     args = parse_args()
-    if args.temperature <= 0:
-        raise ValueError("--temperature must be positive.")
 
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
@@ -185,7 +180,6 @@ def main() -> None:
         model,
         ground_truth[:, :input_tokens].to(device),
         target_tokens,
-        args.temperature,
     )
 
     input_render_data = [

@@ -41,6 +41,33 @@ CSV_DTYPE = {
 }
 
 
+# Each pair is (a, b) and is evaluated as a * one-based shape-step index + b.
+# top_k is floored because categorical sampling requires an integer count.
+GPT_SAMPLING_CONFIG = {
+    "cx": {"temperature": (0.003, 0.5), "top_k": (0.0, 50)},
+    "cy": {"temperature": (0.0, 0.3), "top_k": (0.0, 30)},
+    "theta": {"temperature": (0.003, 1.0), "top_k": (0.0, 75)},
+    "w": {"temperature": (0.0, 1.0), "top_k": (0.0, 50)},
+    "h": {"temperature": (0.0, 0.3), "top_k": (0.0, 30)},
+    "shape_type": {"temperature": (0.0, 0.3), "top_k": (0.0, 50)},
+    "r": {"temperature": (0.003, 0.7), "top_k": (0.5, 50)},
+    "g": {"temperature": (0.0, 0.3), "top_k": (0.5, 30)},
+    "b": {"temperature": (0.0, 0.3), "top_k": (0.5, 30)},
+}
+TOKEN_FIELD_ORDER = ("cx", "cy", "theta", "w", "h", "shape_type", "r", "g", "b")
+TOKEN_LAYOUT_FIELD_NAMES = {
+    "cx": "x",
+    "cy": "y",
+    "theta": "angle",
+    "w": "width",
+    "h": "height",
+    "shape_type": "shape",
+    "r": "red",
+    "g": "green",
+    "b": "blue",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render local primitive-operation predictions from a release package."
@@ -66,7 +93,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("visualizations"))
     parser.add_argument("--num-tests", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--temperature", type=float, default=0.4)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
@@ -218,15 +244,48 @@ def render_single_image(render_data: np.ndarray, axis, canvas_size: int) -> None
         axis.add_patch(primitive)
 
 
+def sampling_parameters_for_token_position(token_position: int) -> tuple[str, int, float, int, slice]:
+    """Return field-aware sampling values for the next absolute token position."""
+    if token_position < 0:
+        raise ValueError("token_position must be non-negative")
+
+    field_name = TOKEN_FIELD_ORDER[token_position % len(TOKEN_FIELD_ORDER)]
+    shape_step = token_position // len(TOKEN_FIELD_ORDER) + 1
+    config = GPT_SAMPLING_CONFIG[field_name]
+    temperature_a, temperature_b = config["temperature"]
+    top_k_a, top_k_b = config["top_k"]
+    temperature = temperature_a * shape_step + temperature_b
+    raw_top_k = top_k_a * shape_step + top_k_b
+    token_slice = TOKEN_LAYOUT.field_slice(TOKEN_LAYOUT_FIELD_NAMES[field_name])
+    field_vocab_size = token_slice.stop - token_slice.start
+    top_k = min(field_vocab_size, max(1, math.floor(raw_top_k)))
+    return field_name, shape_step, temperature, top_k, token_slice
+
+
+def sample_next_token(logits: torch.Tensor, next_token_position: int) -> torch.Tensor:
+    """Sample one token using the scheduled field temperature and top-k."""
+    _, _, temperature, top_k, token_slice = sampling_parameters_for_token_position(
+        next_token_position
+    )
+    field_logits = logits[:, token_slice]
+    top_logits, top_indices = torch.topk(field_logits, k=top_k, dim=-1)
+    if temperature <= 0.0:
+        selected_relative_index = top_indices[:, :1]
+    else:
+        probabilities = F.softmax(top_logits / temperature, dim=-1)
+        selected_top_index = torch.multinomial(probabilities, num_samples=1)
+        selected_relative_index = top_indices.gather(1, selected_top_index)
+    return selected_relative_index + token_slice.start
+
+
 @torch.inference_mode()
-def generate(model, prompt: torch.Tensor, target_tokens: int, temperature: float) -> torch.Tensor:
-    if temperature <= 0:
-        raise ValueError("--temperature must be positive")
+def generate(model, prompt: torch.Tensor, target_tokens: int) -> torch.Tensor:
+    if prompt.size(1) > target_tokens:
+        raise ValueError("prompt length cannot exceed target_tokens")
     logits, cache = model(prompt, use_cache=True)
     current = prompt
     while current.size(1) < target_tokens:
-        probabilities = F.softmax(logits[:, -1, :] / temperature, dim=-1)
-        next_tokens = torch.multinomial(probabilities, num_samples=1)
+        next_tokens = sample_next_token(logits[:, -1, :], current.size(1))
         current = torch.cat([current, next_tokens], dim=1)
         if current.size(1) < target_tokens:
             logits, cache = model(next_tokens, past_key_values=cache, use_cache=True)
@@ -264,7 +323,7 @@ def main() -> None:
     for row_index, ground_truth in enumerate(samples):
         prompt = ground_truth[: prefix_steps * tokens_per_step].unsqueeze(0)
         prompt = prompt.repeat(args.batch_size, 1).to(device)
-        predicted = generate(model, prompt, target_tokens, args.temperature)
+        predicted = generate(model, prompt, target_tokens)
         render_single_image(
             decode_tokens_to_render_data(ground_truth[:target_tokens]),
             axes[row_index, 0],
