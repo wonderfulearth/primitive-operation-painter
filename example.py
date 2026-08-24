@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from PIL import Image
 
 from pretrained import load_pretrained
 from token_layout import TOKEN_LAYOUT
@@ -37,6 +38,9 @@ MODEL_WEIGHTS_FILE = "model.safetensors"
 EXAMPLE_SEQUENCE_STEPS = 11
 COMPLETION_STEPS = 144
 EXAMPLE_COUNT = 6
+GIF_INITIAL_FRAME_DURATION_MS = 3_000
+GIF_MAX_BYTES = 10 * 1024 * 1024
+GIF_ENCODING_LEVELS = ((720, 128), (640, 96), (560, 64))
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +70,21 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_PATH,
         help=f"Comparison image path (default: {DEFAULT_OUTPUT_PATH}).",
+    )
+    parser.add_argument(
+        "--gif-output",
+        type=Path,
+        default=None,
+        help=(
+            "Optional autoregressive GIF path. When supplied, keep the input frame "
+            "for three seconds and add one frame for every predicted shape."
+        ),
+    )
+    parser.add_argument(
+        "--gif-fps",
+        type=int,
+        default=10,
+        help="Frames per second after the three-second input hold (default: 10).",
     )
     parser.add_argument(
         "--seed",
@@ -187,8 +206,112 @@ def validate_release_config(release_config: dict) -> int:
     return sequence["tokens_per_step"]
 
 
+def render_animation_frame(
+    groups: list[tuple[str, pd.DataFrame]],
+    render_data_by_sample: list[np.ndarray],
+    step_count: int,
+    canvas_size: int,
+) -> Image.Image:
+    """Render one 3x2 grid frame for a shared autoregressive step count."""
+    figure, axes = plt.subplots(2, 3, figsize=(7.2, 5.1), dpi=100, squeeze=False)
+    for axis, (image_name, _), render_data in zip(
+        axes.flat, groups, render_data_by_sample, strict=True
+    ):
+        render_single_image(render_data, axis, canvas_size)
+        axis.set_title(f"Example {image_name}", fontsize=9)
+
+    if step_count == EXAMPLE_SEQUENCE_STEPS:
+        title = "Input: 11 true steps"
+    else:
+        title = f"Autoregressive completion: {step_count} / {COMPLETION_STEPS} steps"
+    figure.suptitle(title, y=0.995)
+    figure.tight_layout(rect=(0, 0, 1, 0.96), pad=0.35, w_pad=0.25, h_pad=0.5)
+    figure.canvas.draw()
+    rgba = np.asarray(figure.canvas.buffer_rgba()).copy()
+    plt.close(figure)
+    return Image.fromarray(rgba[:, :, :3], mode="RGB")
+
+
+def render_autoregressive_frames(
+    groups: list[tuple[str, pd.DataFrame]],
+    token_states: list[torch.Tensor],
+    tokens_per_step: int,
+    canvas_size: int,
+) -> list[Image.Image]:
+    """Decode and render the input state plus one frame for each completed shape."""
+    expected_frame_count = 1 + COMPLETION_STEPS - EXAMPLE_SEQUENCE_STEPS
+    if len(token_states) != expected_frame_count:
+        raise RuntimeError(
+            f"Expected {expected_frame_count} animation states, got {len(token_states)}."
+        )
+
+    frames: list[Image.Image] = []
+    for state in token_states:
+        if state.ndim != 2 or state.size(0) != EXAMPLE_COUNT:
+            raise RuntimeError(f"Invalid animation state shape: {tuple(state.shape)}")
+        step_count, remainder = divmod(state.size(1), tokens_per_step)
+        if remainder or not EXAMPLE_SEQUENCE_STEPS <= step_count <= COMPLETION_STEPS:
+            raise RuntimeError(
+                f"Animation state has invalid token length: {state.size(1)} tokens."
+            )
+        render_data = [decode_tokens_to_render_data(tokens) for tokens in state]
+        if any(len(data) != step_count for data in render_data):
+            raise RuntimeError(
+                f"Animation state for step {step_count} could not be decoded completely."
+            )
+        frames.append(render_animation_frame(groups, render_data, step_count, canvas_size))
+    return frames
+
+
+def write_optimized_gif(
+    frames: list[Image.Image], output_path: Path, fps: int
+) -> tuple[int, int, int]:
+    """Write a README-friendly GIF and return (width, palette_size, byte_size)."""
+    if fps <= 0:
+        raise ValueError("--gif-fps must be positive.")
+    if len(frames) != 1 + COMPLETION_STEPS - EXAMPLE_SEQUENCE_STEPS:
+        raise ValueError("GIF export received an unexpected frame count.")
+
+    output_path = output_path.expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    durations = [GIF_INITIAL_FRAME_DURATION_MS] + [round(1_000 / fps)] * (len(frames) - 1)
+    for max_width, palette_size in GIF_ENCODING_LEVELS:
+        scale = min(1.0, max_width / frames[0].width)
+        output_size = (
+            max(1, round(frames[0].width * scale)),
+            max(1, round(frames[0].height * scale)),
+        )
+        encoded_frames = []
+        for frame in frames:
+            resized = frame.resize(output_size, Image.Resampling.LANCZOS)
+            encoded_frames.append(
+                resized.quantize(colors=palette_size, method=Image.Quantize.MEDIANCUT)
+            )
+        encoded_frames[0].save(
+            output_path,
+            format="GIF",
+            save_all=True,
+            append_images=encoded_frames[1:],
+            duration=durations,
+            loop=0,
+            disposal=2,
+            optimize=True,
+        )
+        byte_size = output_path.stat().st_size
+        if byte_size <= GIF_MAX_BYTES:
+            return output_size[0], palette_size, byte_size
+
+    output_path.unlink(missing_ok=True)
+    raise RuntimeError(
+        f"GIF could not be compressed below {GIF_MAX_BYTES / 1024 / 1024:.0f} MiB. "
+        "Reduce the animation dimensions or palette settings."
+    )
+
+
 def main() -> None:
     args = parse_args()
+    if args.gif_fps <= 0:
+        raise ValueError("--gif-fps must be positive.")
 
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
@@ -206,10 +329,20 @@ def main() -> None:
     )
     input_tokens = EXAMPLE_SEQUENCE_STEPS * tokens_per_step
     target_tokens = COMPLETION_STEPS * tokens_per_step
+    animation_states: list[torch.Tensor] | None = None
+    on_completed_shape = None
+    if args.gif_output is not None:
+        animation_states = [ground_truth[:, :input_tokens].detach().cpu().clone()]
+
+        def record_completed_shape(tokens: torch.Tensor) -> None:
+            animation_states.append(tokens.detach().cpu().clone())
+
+        on_completed_shape = record_completed_shape
     predicted = generate(
         model,
         ground_truth[:, :input_tokens].to(device),
         target_tokens,
+        on_completed_shape=on_completed_shape,
     )
 
     input_render_data = [
@@ -253,6 +386,18 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(figure)
+    if animation_states is not None:
+        animation_frames = render_autoregressive_frames(
+            groups, animation_states, tokens_per_step, canvas_size
+        )
+        gif_width, palette_size, gif_byte_size = write_optimized_gif(
+            animation_frames, args.gif_output, args.gif_fps
+        )
+        print(
+            f"Saved GIF: {args.gif_output.expanduser().resolve()} | "
+            f"frames={len(animation_frames)} | width={gif_width}px | "
+            f"palette={palette_size} | size={gif_byte_size / 1024 / 1024:.2f} MiB"
+        )
     print(f"Model package: {model_dir}")
     print(f"Example CSV: {args.csv_path.expanduser().resolve()}")
     print(f"Saved comparison: {output_path.resolve()}")

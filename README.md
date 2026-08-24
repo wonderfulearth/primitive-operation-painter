@@ -119,6 +119,23 @@ By default the result is written to
 `example/example_inference.png`. Use `--csv-path`, `--output-path`, `--seed`,
 or `--device` to override the example inputs and inference settings.
 
+## Autoregressive prediction animation
+
+![Six examples of autoregressive completion](example/autoregressive_prediction.gif)
+
+The animation shows all six example sequences in a 3-column by 2-row grid.
+It holds the true 11-step input for three seconds, then adds one frame for each
+newly predicted primitive through step 144. Recreate the tracked README asset
+with the same local model package and seed:
+
+```powershell
+python example.py `
+  --gif-output example\autoregressive_prediction.gif
+```
+
+Use `--gif-fps` to change the prediction-frame rate; the input hold is always
+three seconds.
+
 Both `example.py` and `visualize.py` use the same field-aware sampling
 schedule. For each generated token, temperature and `top_k` are evaluated as
 `a * step + b` from `GPT_SAMPLING_CONFIG`; `step` is the one-based drawing

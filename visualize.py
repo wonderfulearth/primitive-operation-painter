@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -279,7 +280,18 @@ def sample_next_token(logits: torch.Tensor, next_token_position: int) -> torch.T
 
 
 @torch.inference_mode()
-def generate(model, prompt: torch.Tensor, target_tokens: int) -> torch.Tensor:
+def generate(
+    model,
+    prompt: torch.Tensor,
+    target_tokens: int,
+    on_completed_shape: Callable[[torch.Tensor], None] | None = None,
+) -> torch.Tensor:
+    """Autoregressively sample tokens and optionally report completed shape steps.
+
+    ``on_completed_shape`` receives the full current token tensor after every
+    completed nine-token drawing operation generated beyond the prompt. The
+    callback must copy the tensor itself if it needs to retain a snapshot.
+    """
     if prompt.size(1) > target_tokens:
         raise ValueError("prompt length cannot exceed target_tokens")
     logits, cache = model(prompt, use_cache=True)
@@ -287,6 +299,8 @@ def generate(model, prompt: torch.Tensor, target_tokens: int) -> torch.Tensor:
     while current.size(1) < target_tokens:
         next_tokens = sample_next_token(logits[:, -1, :], current.size(1))
         current = torch.cat([current, next_tokens], dim=1)
+        if on_completed_shape is not None and current.size(1) % len(TOKEN_FIELD_ORDER) == 0:
+            on_completed_shape(current)
         if current.size(1) < target_tokens:
             logits, cache = model(next_tokens, past_key_values=cache, use_cache=True)
     return current
