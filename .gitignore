@@ -4,6 +4,7 @@
 *.ckpt
 *.safetensors
 checkpoints*/
+model/
 
 # Training data, generated caches, and local outputs
 High_reso_dataset/

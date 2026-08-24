@@ -81,11 +81,34 @@ steps: a background operation followed by ten primitives. They are a quick
 inference demonstration, not training data: the released trainer requires
 complete 144-step sequences.
 
-Point `example.py` at a local model package that contains `config.json` and
-`model.safetensors`. It renders a two-column, six-row PNG. The left side shows
-the eleven input operations; the right side starts from those same eleven
-operations and samples the remaining 133 steps to make a complete 144-step
-sequence.
+Download or copy the complete model package into a `model` folder at the
+project root. Keep both package files directly inside that folder:
+
+```text
+primitive_operation_painter/
+├── example/
+│   └── sequences/v1/data_part_1.csv
+├── model/
+│   ├── config.json
+│   └── model.safetensors
+└── example.py
+```
+
+The `model/` folder is ignored by Git, so the weight is never added to the
+code repository. With this layout, run the demonstration without arguments:
+
+```powershell
+python example.py
+```
+
+It renders a two-column, six-row PNG. The left side shows the eleven input
+operations; the right side starts from those same eleven operations and
+samples the remaining 133 steps to make a complete 144-step sequence. If
+`model/`, `config.json`, or `model.safetensors` is missing, `example.py`
+prints the expected location and exits before it tries to load or download a
+model.
+
+To use a model package stored elsewhere, override the default explicitly:
 
 ```powershell
 python example.py `

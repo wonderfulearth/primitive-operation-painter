@@ -29,8 +29,11 @@ from visualize import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "model"
 DEFAULT_CSV_PATH = PROJECT_ROOT / "example" / "sequences" / "v1" / "data_part_1.csv"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "example" / "example_inference.png"
+MODEL_CONFIG_FILE = "config.json"
+MODEL_WEIGHTS_FILE = "model.safetensors"
 EXAMPLE_SEQUENCE_STEPS = 11
 COMPLETION_STEPS = 144
 EXAMPLE_COUNT = 6
@@ -45,9 +48,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-dir",
-        required=True,
         type=Path,
-        help="Local model package directory containing config.json and model.safetensors.",
+        default=DEFAULT_MODEL_DIR,
+        help=(
+            "Local model package directory containing config.json and "
+            f"model.safetensors (default: {DEFAULT_MODEL_DIR})."
+        ),
     )
     parser.add_argument(
         "--csv-path",
@@ -82,6 +88,26 @@ def resolve_device(device_name: str) -> torch.device:
     if device_name == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda was requested, but CUDA is not available.")
     return torch.device(device_name)
+
+
+def require_model_package(model_dir: Path) -> Path:
+    """Validate a local package before the shared loader can attempt any download."""
+    model_dir = model_dir.expanduser()
+    expected_files = (MODEL_CONFIG_FILE, MODEL_WEIGHTS_FILE)
+    if not model_dir.is_dir():
+        raise FileNotFoundError(
+            f"Model package directory not found: {model_dir}.\n"
+            f"Place the downloaded model package at: {DEFAULT_MODEL_DIR}\n"
+            "It must contain config.json and model.safetensors, or supply "
+            "another local package directory with --model-dir."
+        )
+    missing_files = [name for name in expected_files if not (model_dir / name).is_file()]
+    if missing_files:
+        raise FileNotFoundError(
+            f"Model package is incomplete: {model_dir}. Missing: {', '.join(missing_files)}.\n"
+            "Expected files: config.json and model.safetensors."
+        )
+    return model_dir.resolve()
 
 
 def load_example_groups(csv_path: Path) -> list[tuple[str, pd.DataFrame]]:
@@ -166,8 +192,12 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
+    try:
+        model_dir = require_model_package(args.model_dir)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"❌ {exc}") from None
     groups = load_example_groups(args.csv_path)
-    model, release_config, model_dir = load_pretrained(args.model_dir, device=device)
+    model, release_config, model_dir = load_pretrained(model_dir, device=device)
     tokens_per_step = validate_release_config(release_config)
     canvas_size = release_config["canvas"]["canvas_size"]
 
