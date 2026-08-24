@@ -27,15 +27,46 @@ then install the remaining dependencies:
 python -m pip install -r requirements.txt
 ```
 
-Set the training-data root with `ANIME_PAINTER_DATA_DIR`, or place it at the
-project-relative path `../High_reso_dataset/fast_shape_renderer/output_256`.
-The data root must contain the expected versioned CSV directories such as
-`v1/*.csv`.
+Set the training-data root with `ANIME_PAINTER_DATA_DIR`, or generate it with
+the bundled `fast_shape_render` converter. Its default output directory is
+`data/output_256`, which is also the Python programs' default data location.
+The data root must contain versioned CSV directories such as `v1/*.csv`.
 
 ```powershell
 $env:ANIME_PAINTER_DATA_DIR = 'D:\datasets\output_256'
 python train_gpt_pretrain.py
 ```
+
+## Convert an image dataset to training sequences
+
+`fast_shape_render` is a separate Rust/WGPU GPU converter. It resizes each
+input image to 256×256, approximates it with primitive drawing operations, and
+writes the CSV sequence layout consumed by the Python dataset loader.
+
+Install the Rust toolchain, then set the input directory before running it.
+The converter requires a hardware GPU: DirectX 12 on Windows, Vulkan on Linux,
+and Metal on macOS. Its default output is `data/output_256`; no personal path
+is embedded in the converter.
+
+```powershell
+$env:SHAPE_RENDERER_INPUT_DIR = 'D:\images\faces_256'
+
+Push-Location fast_shape_render
+cargo run --release
+Pop-Location
+```
+
+Optional environment variables:
+
+- `SHAPE_RENDERER_OUTPUT_DIR` — use a different CSV output root.
+- `SHAPE_RENDERER_NUM_VERSIONS` — number of output variants; defaults to 10.
+- `SHAPE_RENDERER_IMAGES_PER_GPU_BATCH` and
+  `SHAPE_RENDERER_HISTORY_READBACK_IMAGES` — reduce these if GPU memory is
+  limited.
+
+After conversion, either use the default `data/output_256` location or point
+training and visualization to a custom output root with
+`ANIME_PAINTER_DATA_DIR` or `--data-dir`.
 
 ## Local visualization
 

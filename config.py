@@ -11,12 +11,7 @@ def resolve_data_dir():
     if env_data_dir:
         return os.path.abspath(os.path.expanduser(env_data_dir))
 
-    project_data_dir = (
-        Path(__file__).resolve().parent.parent
-        / "High_reso_dataset"
-        / "fast_shape_renderer"
-        / "output_256"
-    )
+    project_data_dir = Path(__file__).resolve().parent / "data" / "output_256"
     return str(project_data_dir)
 
 
@@ -34,7 +29,7 @@ class TrainConfig:
     # ==========================================
     # 📁 路径配置
     # ==========================================
-    # 可用 ANIME_PAINTER_DATA_DIR 显式覆盖；Linux 默认使用项目旁的数据目录。
+    # 可用 ANIME_PAINTER_DATA_DIR 显式覆盖；默认使用转换器生成的 data/output_256。
     DATA_DIR = resolve_data_dir()
     DATA_CACHE_DIR = resolve_data_cache_dir()
     # 公开的 EMA 权重使用 144-step context；本地续训断点保存在此目录。

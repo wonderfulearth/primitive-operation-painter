@@ -33,3 +33,6 @@ env/
 # Local publication and private archive staging
 hf_release/
 private_model_archives/
+
+# Rust converter build artifacts
+fast_shape_render/target/
